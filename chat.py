@@ -15,7 +15,7 @@ st.write("Ask about your emotions, problems, or confusions, and find relevant Qu
 # Step 1: Load and preprocess the Quran PDF
 @st.cache_resource
 def load_knowledge_base():
-    file_path = "C:\Users\kkt\Downloads\The-Quran-Saheeh-International.pdf"
+    file_path = "The-Quran-Saheeh-International.pdf"
     if not os.path.exists(file_path):
         st.error("Please ensure 'The-Quran-Saheeh-International.pdf' is in the project directory.")
         return None, None
