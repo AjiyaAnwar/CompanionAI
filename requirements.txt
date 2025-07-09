@@ -7,5 +7,5 @@ transformers==4.44.2
 PyPDF2==3.0.1
 tf-keras==2.18.0
 requests==2.32.3
-numpy==2.1.0
+numpy==1.26.4
 scipy==1.14.1
