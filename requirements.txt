@@ -1,11 +1,4 @@
 streamlit==1.39.0
-langchain==0.3.0
-langchain-huggingface==0.1.0
 sentence-transformers==3.1.1
-faiss-cpu==1.9.0
-transformers==4.44.2
 PyPDF2==3.0.1
-tf-keras==2.18.0
-requests==2.32.3
-numpy==1.26.4
-scipy==1.14.1
+numpy
