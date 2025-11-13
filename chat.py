@@ -13,7 +13,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Custom CSS for better styling
+# Custom CSS for better styling with BLACK TEXT for verses
 st.markdown("""
 <style>
     .main-header {
@@ -33,13 +33,19 @@ st.markdown("""
         color: #1f4e79;
         font-weight: bold;
         margin-bottom: 0.5rem;
+        font-size: 1.1rem;
     }
     .response-text {
         font-size: 1.1rem;
         line-height: 1.6;
+        color: #000000 !important;  /* Black text for verses */
     }
     .stButton button {
         width: 100%;
+    }
+    /* Ensure all text in verse boxes is black */
+    .verse-box * {
+        color: #000000 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -194,7 +200,7 @@ def find_relevant_verses_simple(query, verses, top_k=5):
         return [v for v in verses if any(kw in ['comfort', 'mercy', 'patience'] for kw in v.get('keywords', []))][:top_k]
 
 def display_verse(verse_data):
-    """Display a verse in a formatted box"""
+    """Display a verse in a formatted box with BLACK TEXT"""
     st.markdown(f"""
     <div class="verse-box">
         <div class="surah-info">{verse_data['full_reference']}</div>
