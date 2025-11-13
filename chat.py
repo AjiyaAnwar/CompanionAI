@@ -1,117 +1,282 @@
 import streamlit as st
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.llms import HuggingFacePipeline
-from langchain.prompts import PromptTemplate
-from PyPDF2 import PdfReader
+import PyPDF2
 import re
 import os
+from sentence_transformers import SentenceTransformer, util
+import torch
 
-# Initialize Streamlit app
-st.title("Quranic Guidance Chatbot")
-st.write("Ask about your emotions, problems, or confusions, and find relevant Quranic verses.")
-
-# Step 1: Load and preprocess the Quran PDF
-@st.cache_resource
-def load_knowledge_base():
-    file_path = "The-Quran-Saheeh-International.pdf"
-    if not os.path.exists(file_path):
-        st.error("Please ensure 'The-Quran-Saheeh-International.pdf' is in the project directory.")
-        return None, None
-    
-    # Extract text from PDF
-    reader = PdfReader(file_path)
-    text = ""
-    for page in reader.pages:
-        extracted_text = page.extract_text() or ""
-        text += extracted_text + "\n"
-    
-    # Split text into verses, assuming format like "1:1 Text" or "Surah 1, Ayah 1: Text"
-    documents = []
-    metadata = []
-    lines = text.split("\n")
-    for line in lines:
-        match = re.match(r"(\d+):(\d+)\s+(.+)", line.strip()) or \
-                re.match(r"Surah\s+(\d+),\s+Ayah\s+(\d+):\s+(.+)", line.strip(), re.IGNORECASE)
-        if match:
-            surah, ayah, verse_text = match.groups()
-            documents.append(verse_text.strip())
-            metadata.append({"surah": surah, "ayah": ayah})
-    
-    if not documents:
-        st.error("No verses found. Ensure the PDF has Surah:Ayah numbers with text.")
-        return None, None
-    
-    # Split long verses if needed
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    chunks = []
-    chunk_metadata = []
-    for i, doc in enumerate(documents):
-        split_chunks = text_splitter.split_text(doc)
-        chunks.extend(split_chunks)
-        chunk_metadata.extend([metadata[i]] * len(split_chunks))
-    
-    return chunks, chunk_metadata
-
-# Step 2: Create embeddings and vector store
-@st.cache_resource
-def create_vector_store(chunks, metadata):
-    if chunks is None:
-        return None
-    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vector_store = FAISS.from_texts(
-        texts=chunks,
-        embedding=embedding_model,
-        metadatas=metadata
-    )
-    return vector_store
-
-# Step 3: Initialize the LLM
-@st.cache_resource
-def load_llm():
-    llm = HuggingFacePipeline.from_model_id(
-        model_id="gpt2",  # Lightweight for CPU
-        task="text-generation",
-        pipeline_kwargs={"max_length": 200, "truncation": True}
-    )
-    return llm
-
-# Step 4: Set up prompt template
-prompt_template = PromptTemplate(
-    input_variables=["context", "query"],
-    template="You are a respectful assistant providing guidance based on the Quran (Sahih International translation). The user has expressed: '{query}'. Based on the following Quranic verses (with Surah and Ayah numbers):\n{context}\n\nProvide a concise, comforting, and accurate response, citing the relevant verses (e.g., Surah Al-Baqarah, 2:286). Avoid speculation and focus on the provided context."
+# Set page configuration
+st.set_page_config(
+    page_title="Quranic Guidance Chatbot",
+    page_icon="📖",
+    layout="centered"
 )
 
-# Step 5: Main chatbot logic
-def get_response(query, vector_store, llm):
-    if vector_store is None or not query:
-        return "Please provide a valid query and ensure the Quran PDF is loaded.", ""
-    
-    # Retrieve relevant verses
-    relevant_docs = vector_store.similarity_search_with_score(query, k=3)
-    context = ""
-    for doc, score in relevant_docs:
-        surah = doc.metadata["surah"]
-        ayah = doc.metadata["ayah"]
-        context += f"Surah {surah}, Ayah {ayah}: {doc.page_content}\n"
-    
-    # Generate response
-    prompt = prompt_template.format(context=context, query=query)
-    response = llm(prompt)
-    return response, context
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f4e79;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .verse-box {
+        background-color: #f8f9fa;
+        border-left: 5px solid #1f4e79;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 5px;
+    }
+    .surah-info {
+        color: #1f4e79;
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+    }
+    .response-text {
+        font-size: 1.1rem;
+        line-height: 1.6;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Load resources
-chunks, metadata = load_knowledge_base()
-vector_store = create_vector_store(chunks, metadata)
-llm = load_llm()
+# Title and description
+st.markdown('<h1 class="main-header">📖 Quranic Guidance Chatbot</h1>', unsafe_allow_html=True)
+st.write("Share your feelings, problems, or questions, and receive relevant guidance from the Holy Quran.")
 
-# Step 6: Streamlit interface
-query = st.text_input("Share your emotion, problem, or confusion (e.g., 'I feel sad' or 'What does the Quran say about patience?'):")
-if query:
-    with st.spinner("Retrieving Quranic verses..."):
-        response, context = get_response(query, vector_store, llm)
-        st.write("**Response:**")
-        st.write(response)
-        with st.expander("Relevant Quranic Verses"):
-            st.write(context)
+# Initialize session state for chat history
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+
+@st.cache_resource
+def load_quran_data():
+    """Load and parse the Quran PDF content"""
+    try:
+        # Read the PDF file
+        pdf_path = "Holy-Quran-English.pdf"
+        
+        if not os.path.exists(pdf_path):
+            st.error(f"Quran PDF file not found at: {pdf_path}")
+            return []
+        
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            
+            verses = []
+            current_chapter = None
+            current_verse_num = 0
+            
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                text = page.extract_text()
+                
+                # Split text into lines and process
+                lines = text.split('\n')
+                
+                for line in lines:
+                    line = line.strip()
+                    
+                    # Skip empty lines and headers
+                    if not line or 'THE HOLY QUR' in line.upper() or 'CHAPTER' in line.upper():
+                        continue
+                    
+                    # Look for chapter headers (like "AL-FATIHAH", "AL-BAQARAH")
+                    if (line.isupper() and len(line) > 3 and 
+                        not line.startswith('Part') and 
+                        not line.startswith('R.')):
+                        current_chapter = line
+                        current_verse_num = 0
+                        continue
+                    
+                    # Look for verse patterns - numbers followed by text
+                    verse_match = re.match(r'^(\d+)\.\s+(.+)$', line)
+                    if verse_match and current_chapter:
+                        current_verse_num = verse_match.group(1)
+                        verse_text = verse_match.group(2)
+                        
+                        # Clean up the verse text
+                        verse_text = re.sub(r'[†*‡]', '', verse_text)  # Remove footnotes markers
+                        verse_text = re.sub(r'\s+', ' ', verse_text).strip()
+                        
+                        if len(verse_text) > 10:  # Ensure it's a meaningful verse
+                            verses.append({
+                                'chapter': current_chapter,
+                                'verse_number': current_verse_num,
+                                'text': verse_text,
+                                'full_reference': f"{current_chapter} {current_verse_num}"
+                            })
+            
+            return verses
+            
+    except Exception as e:
+        st.error(f"Error loading Quran data: {str(e)}")
+        return []
+
+@st.cache_resource
+def load_embedding_model():
+    """Load the sentence transformer model for semantic similarity"""
+    try:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        return model
+    except Exception as e:
+        st.error(f"Error loading embedding model: {str(e)}")
+        return None
+
+def find_relevant_verses(query, verses, model, top_k=5):
+    """Find the most relevant Quranic verses for the query"""
+    if not verses or not model:
+        return []
+    
+    try:
+        # Encode the query and all verses
+        query_embedding = model.encode([query], convert_to_tensor=True)
+        verse_texts = [verse['text'] for verse in verses]
+        verse_embeddings = model.encode(verse_texts, convert_to_tensor=True)
+        
+        # Calculate cosine similarities
+        similarities = util.pytorch_cos_sim(query_embedding, verse_embeddings)[0]
+        
+        # Get top k most similar verses
+        top_indices = torch.topk(similarities, min(top_k, len(verses))).indices
+        
+        relevant_verses = []
+        for idx in top_indices:
+            if similarities[idx] > 0.3:  # Similarity threshold
+                verse_data = verses[idx.item()].copy()
+                verse_data['similarity_score'] = similarities[idx].item()
+                relevant_verses.append(verse_data)
+        
+        return relevant_verses
+        
+    except Exception as e:
+        st.error(f"Error finding relevant verses: {str(e)}")
+        return []
+
+# Emotion to Quranic theme mapping
+EMOTION_KEYWORDS = {
+    'sad': ['patience', 'comfort', 'hope', 'mercy', 'difficulty', 'relief'],
+    'anxious': ['patience', 'trust', 'peace', 'fear', 'worry', 'calm'],
+    'angry': ['forgiveness', 'patience', 'control', 'anger', 'peace'],
+    'happy': ['gratitude', 'thanks', 'blessings', 'joy', 'happiness'],
+    'confused': ['guidance', 'wisdom', 'knowledge', 'understanding', 'clarity'],
+    'scared': ['protection', 'safety', 'trust', 'fear', 'courage'],
+    'lonely': ['companionship', 'comfort', 'mercy', 'love', 'solitude'],
+    'stressed': ['peace', 'patience', 'relief', 'ease', 'burden'],
+    'grateful': ['thanks', 'blessings', 'gratitude', 'favors', 'appreciation'],
+    'hopeless': ['hope', 'mercy', 'relief', 'help', 'despair']
+}
+
+def enhance_query_with_emotion(query):
+    """Enhance the query with emotion-related keywords"""
+    query_lower = query.lower()
+    enhanced_query = query
+    
+    for emotion, keywords in EMOTION_KEYWORDS.items():
+        if emotion in query_lower:
+            enhanced_query += " " + " ".join(keywords)
+            break
+    
+    return enhanced_query
+
+def display_verse(verse_data):
+    """Display a verse in a formatted box"""
+    st.markdown(f"""
+    <div class="verse-box">
+        <div class="surah-info">{verse_data['full_reference']}</div>
+        <div class="response-text">{verse_data['text']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Main application
+def main():
+    # Load data and models
+    with st.spinner("Loading Quranic data..."):
+        verses = load_quran_data()
+        model = load_embedding_model()
+    
+    if not verses:
+        st.error("Could not load Quranic verses. Please check the PDF file.")
+        return
+    
+    st.success(f"✅ Loaded {len(verses)} Quranic verses")
+    
+    # Example queries
+    st.markdown("### 💡 Example Queries:")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("I'm feeling sad"):
+            st.session_state.user_query = "I'm feeling sad and need comfort"
+    with col2:
+        if st.button("I'm anxious"):
+            st.session_state.user_query = "I'm feeling anxious and worried"
+    with col3:
+        if st.button("I need guidance"):
+            st.session_state.user_query = "I need guidance and direction"
+    
+    # User input
+    user_query = st.text_area(
+        "Share your feelings or questions:",
+        value=st.session_state.get('user_query', ''),
+        placeholder="e.g., 'I'm feeling sad today', 'I need guidance about my future', 'How to deal with anger?'",
+        height=100
+    )
+    
+    if st.button("Get Quranic Guidance", type="primary"):
+        if user_query:
+            with st.spinner("Finding relevant Quranic verses..."):
+                # Enhance query with emotion keywords
+                enhanced_query = enhance_query_with_emotion(user_query)
+                
+                # Find relevant verses
+                relevant_verses = find_relevant_verses(enhanced_query, verses, model, top_k=5)
+                
+                # Add to chat history
+                st.session_state.chat_history.append({
+                    'query': user_query,
+                    'verses': relevant_verses,
+                    'timestamp': len(st.session_state.chat_history)
+                })
+                
+                # Display results
+                if relevant_verses:
+                    st.markdown("### 📜 Relevant Quranic Verses:")
+                    
+                    for verse in relevant_verses:
+                        display_verse(verse)
+                    
+                    st.markdown("---")
+                    st.markdown("""
+                    <div style='text-align: center; color: #666; font-style: italic;'>
+                        May these verses bring you peace and guidance. Reflect upon them with an open heart.
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.info("""
+                    No specific verses found for your query. Here are some general verses of comfort:
+                    """)
+                    # Fallback to general comforting verses
+                    comfort_verses = [
+                        v for v in verses 
+                        if any(keyword in v['text'].lower() for keyword in ['mercy', 'comfort', 'patience', 'peace'])
+                    ][:3]
+                    
+                    for verse in comfort_verses:
+                        display_verse(verse)
+        
+        else:
+            st.warning("Please share your feelings or questions to receive Quranic guidance.")
+    
+    # Display chat history
+    if st.session_state.chat_history:
+        st.markdown("---")
+        st.markdown("### 📝 Your Recent Queries")
+        
+        for i, chat in enumerate(reversed(st.session_state.chat_history[-3:]), 1):
+            with st.expander(f"Query {len(st.session_state.chat_history)-i+1}: {chat['query'][:50]}..."):
+                st.write(f"**Your question:** {chat['query']}")
+                st.write("**Guidance:**")
+                for verse in chat['verses'][:3]:
+                    display_verse(verse)
+
+if __name__ == "__main__":
+    main()
